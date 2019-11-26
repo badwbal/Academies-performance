@@ -1,0 +1,238 @@
+/*****************************************************************************
+
+This version is for the 00345 weights, contextual measures and progress 8. THIS IS OUR PUBLICATION VERSION
+
+Based current year value added measure
+
+This is built up from the unamended pupil level data for 2016
+   
+*****************************************************************************/
+
+/****************************************************************************/
+
+--This code calculates the variance of all pupils nationally (mainstream) for the progress 8 score. This will be needed for the confidence intervals
+
+Use [Academies_production]
+Go
+Select *, (ATT8-ATT8_PRED)/10 as P8SCORE
+into #allpupilsp8
+from [dbo].[KS4_pupil_16_amended_v3_IFD_analysis]
+
+Use [Academies_production]
+go
+select var(P8SCORE) as [Progress 8 score variance]
+into #nationalvariances
+from #allpupilsp8
+Where NFTYPE in(21,22,23,24,25,20,51,52,57,58) and SCHRES=1 and ENDKS=1 and INP8CALC=1
+
+/****************************************************************************/
+
+--This snippet of code is used to produce contextual information in the absence of TPUP. TPUP will come when the results are final
+--THIS CODE TAKES NO ACCOUNT OF PRIOR ATTAINMENT I.E. KS1 APS OF COHORT. Need to check if this still applies or if there is an alternative for 2016
+--It is for the cohort so presumably regardless of whether they are in the progress 8 calculation which does make a difference. Star out for now.
+
+Use [Academies_production]
+go
+Select urn, 
+sum(case when schres=1 and endks=1 /*and inp8calc=1*/ then 1 else 0 end) as TPUP,
+sum(case when schres=1 and endks=1 /*and inp8calc=1*/ and FSM6CLA1A=1 then 1 else 0 end) as TFSMCLA, --disadvantaged pupils, including FSM6, looked after and adopted from care
+sum(case when schres=1 and endks=1 /*and inp8calc=1*/ and SENF in ('S','E', 'P') then 1 else 0 end) as SENELS, --this captures pupils with special educational need statemented or EHC or school action plus
+sum(case when schres=1 and endks=1 /*and inp8calc=1*/ and LANG1ST in ('OTB','OTH') then 1 else 0 end) as TEALGRP2, --this captures the number of pupils with english as an additional language
+Sum(case when schres=1 and endks=1 and VAP2TAAPS>0 then [VAP2TAAPS] else NULL end) as [Sum KS2APS urn],
+Sum(case when schres=1 and endks=1 and VAP2TAAPS>0 then 1 else 0 end) as [Count KS2APS urn]
+into #provks2context1
+from [dbo].[KS4_pupil_16_amended_v3_IFD_analysis]
+Where NFTYPE in(20,51,52,57,58)
+Group by urn
+Order by urn ASC
+
+Use AcademiesandSchoolOrganisation
+Go
+Select table1.*, table2.[Chain ID], table2.[Chain Name], table2.[Chain Type]
+into #provks2context2
+from #provks2context1 as table1
+left join [dbo].[Chains_29Sep2015_FULL_Mike] as table2
+on table1.urn=table2.urn
+Order by table1.urn ASC
+
+Use academiesandschoolorganisation
+Go
+Select [Chain ID], [Chain Name], Sum(TPUP) as [TPUP_MAT], count(case when (TPUP)>0 then (urn) else NULL end) as [No. MAT schools], Sum(TFSMCLA) as [TFSMCLA_MAT], Sum(SENELS) as [SENELS_MAT], Sum(TEALGRP2) as [TEALGRP2_MAT], Sum([Sum KS2APS urn]) as [KS2APS N], Sum([Count KS2APS urn]) as [KS2APS D]
+into #provks2context3
+from #provks2context2
+Where [Chain Name] is not null
+Group by [Chain ID], [Chain Name]
+Order by [Chain Name] ASC
+
+Use academiesandschoolorganisation
+Go
+Select [Chain ID], [Chain Name], round((Cast([TFSMCLA_MAT]as float)/nullif(Cast([TPUP_MAT] as float),0))*100,1) as [% "disadvantaged"], round((Cast([SENELS_MAT] as float)/nullif(Cast([TPUP_MAT] as float),0))*100,1) as [% SEN/Statemented/EHC/School Action +], round((Cast([TEALGRP2_MAT] as float)/nullif(Cast([TPUP_MAT] as float),0))*100,1) as [% English as aditional language], round((cast([KS2APS N] as float)/nullif(Cast([KS2APS D] as float),0)),1) as [KS2 APS of cohort]
+into #provks2context4
+from #provks2context3
+
+/****************************************************************************/
+
+--Progress 8 LEVEL MAT SCORES FOR KEY STAGE 4
+--This works out the school level progress 8 score and number of pupils included and puts them into a temporary table
+
+Use [Academies_production]
+Go
+Select urn,
+round(avg(case when schres=1 and endks=1 and inp8calc=1 then (P8SCORE) else NULL end),2) as 'School level progress 8 score',
+sum(case when schres=1 and endks=1 then (INP8CALC) else NULL end) as 'Number of pupils included within progress 8 score', 
+sum(case when schres=1 and endks=1 then (SCHRES) else NULL end) as 'Number of eligible pupils'
+into #prog8_1
+from #allpupilsp8
+Where NFTYPE in(20,51,52,57,58)
+Group by urn
+Order by urn ASC
+
+--This isolates all the school level progress 8 scores that are not NULL and puts them into a temporary table
+
+Select *
+into #prog8_2
+from #prog8_1
+where [School level progress 8 score] is not null
+Order by urn ASC
+
+--This joins on the chain infomation for each school within #prog8_2
+
+Use ks4
+Go
+Select table1.*, table2.[Chain ID], table2.[Chain Name], table2.[Chain Type], table2.[Date Joined], table2.[Academy Type]
+into #prog8_3
+from #prog8_2 as table1
+left join [Academiesandschoolorganisation].[dbo].[Chains_29Sep2015_FULL_Mike] as table2
+on table1.urn=table2.urn
+order by urn ASC
+
+--This works out how many academic years each school has been open and in MAT and caps the years in chain to 4 years
+
+Use KS4
+Go
+Select *, case 
+when [Date Joined]>'11-Sep-2015' then 0 
+when [Date Joined]>='12-Sep-2014' and [Date Joined]<='11-Sep-2015' then 0
+when [Date Joined]>='12-Sep-2013' and [Date Joined]<='11-Sep-2014' then 0
+When [Date Joined]>='12-Sep-2012' and [Date Joined]<='11-Sep-2013' then 3
+When [Date Joined]>='12-Sep-2011' and [Date Joined]<='11-Sep-2012' then 4
+When [Date Joined]<='11-Sep-2011' then 5
+end as [Capped years in chain]
+into #prog8_4
+from #prog8_3
+order by urn ASC
+
+Use KS4
+go
+select *, case
+When [Capped years in chain]>=3 and [Academy Type] in ('Academy Converter') then 1 else 0
+end as [Number academy converters],
+Case
+when [Capped years in chain]>=3 and [Academy type] in ('Academy Sponsor Led') then 1 else 0
+end as [Number academy sponsor led],
+Case
+when [Capped years in chain]>=3 and [Academy type] in ('Free Schools','Studio Schools','University Technical College') then 1 else 0
+end as [Number free schools]
+into #prog8_5
+from #prog8_4
+order by urn ASC
+
+--This calculates the progress 8 score weights at school level and isolates only those that have been in a chain for 1 year or more
+
+Use KS4
+Go
+Select *, [Number of eligible pupils]*[Capped years in chain] as [Progress 8 weight], ([Number of eligible pupils]*[Capped years in chain])*[School level progress 8 score] as [Progress 8 weighted score]
+into #prog8_6
+from #prog8_5
+Where [Capped years in chain]>=1
+order by urn ASC
+
+--This calculates the MAT level numerators and denominators for the progress 8 measure regardless of MAT size
+
+Use KS4
+Go
+Select [Chain ID], [Chain Name], Count([urn]) as [Schools included], sum([Number academy converters]) as [Converter academies], sum([Number academy sponsor led]) as [Sponsored academies], sum([Number free schools]) as [Free Schools, UTCs & Studio Schools],
+sum(case [Capped years in chain] when '1' then 1 else 0 end) as [1 year], sum(case [Capped years in chain] when '2' then 1 else 0 end) as [2 years], sum(case [Capped years in chain] when '3' then 1 else 0 end) as [3 years], sum(case [Capped years in chain] when '4' then 1 else 0 end) as [4 years], sum(case [Capped years in chain] when '5' then 1 else 0 end) as [5 or more years],
+sum([Progress 8 weight]) as [MAT progress 8 weight], sum([Progress 8 weighted score]) as [MAT progress 8 weighted score], sum([Number of pupils included within progress 8 score]) as [Number of pupils included in progress 8 MAT measure]
+into #prog8_7
+from #prog8_6
+group by [Chain ID], [Chain Name]
+
+--This filters only those MATs greater than or equal to 3 in size and calculates their overall reading score
+
+Use KS4
+Go
+Select [Chain ID], [Chain Name], [Schools included], [Converter academies], [Sponsored academies], [Free Schools, UTCs & Studio Schools], 
+[1 year], [2 years], [3 years], [4 years], [5 or more years],
+[Number of pupils included in progress 8 MAT measure], [MAT progress 8 weighted score]/nullif([MAT progress 8 weight],0) as [Progress 8 measure]
+into #prog8_8
+from #prog8_7
+Where [Schools included]>=3
+
+--This adds on the progress 8 variance across all pupils nationally
+
+Use KS4
+Go
+Select table1.*, table2.[Progress 8 score variance]
+into #prog8_9
+from #prog8_8 as table1
+left join #nationalvariances as table2
+on 1=1
+Where [Schools included]>=3
+
+--This adds on the confidence interval, lower and upper limits
+
+Use KS4
+Go
+Select *, 1.96*sqrt([Progress 8 score variance]/nullif([Number of pupils included in progress 8 MAT measure],0)) as [Confidence interval width],
+[Progress 8 measure]-(1.96*sqrt([Progress 8 score variance]/nullif([Number of pupils included in progress 8 MAT measure],0))) as [lower confidence limit],
+[Progress 8 measure]+(1.96*sqrt([Progress 8 score variance]/nullif([Number of pupils included in progress 8 MAT measure],0))) as [upper confidence limit]
+into #prog8_10
+from #prog8_9
+Where [Schools included]>=3
+
+--This pulls out the bear minimum final progress 8 measure data we need
+
+Use KS4
+Go
+Select a.[Chain ID], a.[Chain Name],  c.[TPUP_MAT], c.[No. MAT schools], b.[% "disadvantaged"], b.[% SEN/Statemented/EHC/School Action +], b.[% English as aditional language], b.[KS2 APS of cohort], [Schools included], [Converter academies], [Sponsored academies], [Free Schools, UTCs & Studio Schools], 
+[1 year], [2 years], [3 years], [4 years], [5 or more years],
+[Progress 8 measure], [Confidence interval width], [lower confidence limit], [upper confidence limit],
+case when round([lower confidence limit],10)>0 then 'Significantly above average' when round([upper confidence limit],10)<0 then 'Significantly below average' when [lower confidence limit] is NULL then NULL when [upper confidence limit] is NULL then NULL else 'Close to average' end as [Measure description]
+into #prog8_mea
+from #prog8_10 as a
+left join #provks2context4 as b
+on a.[Chain ID]=b.[Chain ID]
+left join #provks2context3 as c
+on a.[Chain ID]=c.[Chain ID]
+Where [Schools included]>=3
+order by a.[Chain Name] ASC
+
+select * from #prog8_mea
+
+--Code to pull out individual schools so that I can match on Edubase data for selective schools
+
+Select * from #prog8_6
+
+/****************************************************************************/
+--code to drop all temp tables
+
+Drop table #allpupilsp8
+Drop table #nationalvariances
+drop table #provks2context1
+drop table #provks2context2
+drop table #provks2context3
+drop table #provks2context4
+drop table #prog8_1
+drop table #prog8_2
+drop table #prog8_3
+drop table #prog8_4
+drop table #prog8_5
+drop table #prog8_6
+drop table #prog8_7
+drop table #prog8_8
+drop table #prog8_9
+drop table #prog8_10
+drop table #prog8_mea
+
+/****************************************************************************/
